@@ -1,223 +1,305 @@
-# Simple RAG Chatbot with Voice Output
+# 📚 RAG Chatbot
 
-A beginner-friendly chatbot that answers questions from your own text file and can read the answers out loud.
+A Retrieval-Augmented Generation (RAG) chatbot that answers questions about **your own documents** (PDF, TXT, Markdown). It retrieves the most relevant passages with semantic search, then asks an LLM to answer using only that context, and shows the sources it used. It includes a REST API, a web UI, a command-line interface, and optional voice answers.
 
-It uses the main idea behind **RAG (Retrieval-Augmented Generation)**: first *retrieve* the most relevant information from a knowledge base, then use it to *answer*. The code is short, heavily commented, and runs fully offline. No API key is needed.
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-API-009688)
+![ChromaDB](https://img.shields.io/badge/ChromaDB-vector%20store-orange)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+> Add a screenshot or demo GIF of the Streamlit UI here, e.g. `![Demo](docs/demo.gif)`.
+
+---
+
+## Table of Contents
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Tech stack](#tech-stack)
+- [Project structure](#project-structure)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [API reference](#api-reference)
+- [Design decisions](#design-decisions)
+- [Testing](#testing)
+- [Docker](#docker)
+- [Troubleshooting](#troubleshooting)
+- [Limitations](#limitations)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Author](#author)
 
 ---
 
 ## Features
 
-- Answers questions using your own `knowledge_base.txt`
-- Shows which chunk each answer came from, with a match score
-- Says "I don't know" when nothing relevant is found, instead of making things up
-- Optional voice output (type `voice on` to enable)
-- Only about 130 lines of beginner-level Python
+- **Multi-format ingestion:** PDF (page-aware), TXT and Markdown files.
+- **Semantic search:** local embeddings with `sentence-transformers` and a persistent ChromaDB vector store, so no embedding API key or cost.
+- **Grounded answers with citations:** the LLM is instructed to answer only from retrieved context and to cite the source file and page.
+- **"Not found" handling:** if nothing relevant is retrieved, the bot says so instead of guessing, and skips the LLM call.
+- **Conversation memory:** recent chat turns are passed along so follow-up questions work.
+- **Two LLM providers:** Anthropic (Claude) or OpenAI, switched with one environment variable.
+- **Voice answers:** optional text-to-speech (gTTS) that returns an mp3.
+- **Three interfaces:** FastAPI REST API (with auto-generated docs), Streamlit chat UI, and a terminal CLI.
+- **Idempotent indexing:** re-indexing the same file never creates duplicates.
+- **Document management:** upload, list and delete documents through the UI or API.
+- **Tested and containerised:** pytest tests and a Dockerfile are included.
 
----
+## How it works
 
-## Project Structure
-
-```
-simple-rag-chatbot/
-├── chat.py          # the chatbot code
-├── knowledge_base.txt  # the text the chatbot learns from
-├── requirements.txt    # Python libraries needed
-├── .gitignore          # files Git should not upload
-├── LICENSE             # MIT license
-└── README.md           # this file
-```
-
----
-
-## How It Works
-
-```
- knowledge_base.txt
-        │
-        ▼
- [1] LOAD      split the text into chunks (one paragraph = one chunk)
-        │
-        ▼
- [2] INDEX     convert every chunk into numbers (TF-IDF vectors)
-        │
- You ask a question
-        │
-        ▼
- [3] RETRIEVE  convert the question into numbers, compare with all
-               chunks (cosine similarity), pick the top matches
-        │
-        ▼
- [4] ANSWER    reply with the best chunk(s) + source and score
-        │
-        ▼
- [5] SPEAK     (optional) read the answer out loud with pyttsx3
+```mermaid
+flowchart LR
+    A[Documents<br/>PDF / TXT / MD] --> B[Loader + Chunker]
+    B --> C[Embedding model<br/>all-MiniLM-L6-v2]
+    C --> D[(ChromaDB<br/>vector store)]
+    Q[User question] --> E[Embed question]
+    E --> F[Top-K similarity search]
+    D --> F
+    F --> G{Score above<br/>threshold?}
+    G -- No --> H[Say 'not found']
+    G -- Yes --> I[Prompt = context + history + question]
+    I --> J[LLM: Claude / GPT]
+    J --> K[Answer + sources]
+    K --> L[Optional: gTTS voice]
 ```
 
-### Step by step
+**Indexing:** each document is split into overlapping chunks (default 800 characters with 150 overlap). Each chunk is embedded and stored with metadata (file name, page, chunk number). Chunk IDs are content hashes, so re-indexing is safe.
 
-**1. Load and chunk.**
-The bot reads `knowledge_base.txt` and splits it wherever there is a blank line. Each paragraph becomes one *chunk*. Small chunks let the bot find the exact part that answers your question instead of returning a whole document.
+**Answering:** the question is embedded and the `TOP_K` most similar chunks are retrieved by cosine similarity. Chunks scoring below `MIN_SCORE` are discarded. If anything remains, the chunks, recent chat history and the question are sent to the LLM with a system prompt that forbids answering outside the context. The answer is returned together with its sources.
 
-**2. Index (TF-IDF).**
-A computer cannot compare sentences directly, so we convert each chunk into a list of numbers. This project uses **TF-IDF**, which gives a word a high score when it appears often in one chunk but rarely in the others. For example, the word "pyttsx3" is rare, so it strongly points to the chunk about voice.
+## Tech stack
 
-**3. Retrieve (cosine similarity).**
-Your question is converted into numbers in the same way. The bot then measures how close the question is to each chunk using **cosine similarity** (0 means nothing in common, 1 means very similar). The top 2 chunks above the minimum score are selected.
+| Layer | Technology |
+|---|---|
+| Language | Python 3.10+ |
+| API | FastAPI, Uvicorn, Pydantic |
+| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
+| Vector database | ChromaDB (persistent, cosine similarity) |
+| PDF parsing | pypdf |
+| LLMs | Anthropic API or OpenAI API |
+| Voice | gTTS |
+| UI | Streamlit |
+| Testing | pytest, httpx |
+| Packaging | Docker |
 
-**4. Answer.**
-The selected chunks are shown as the reply along with the chunk number and match score. If no chunk scores above `MIN_SCORE`, the bot says it could not find the answer.
+## Project structure
 
-**5. Speak (optional).**
-If voice is on, the answer text is passed to **pyttsx3**, an offline text-to-speech library, which reads it aloud.
+```
+rag-chatbot/
+├── app/
+│   ├── __init__.py
+│   ├── config.py        # Settings loaded from environment variables
+│   ├── loader.py        # File loading and text chunking
+│   ├── vectorstore.py   # Embeddings + ChromaDB (add, search, delete)
+│   ├── llm.py           # Prompting and LLM provider calls
+│   ├── rag.py           # Pipeline: ingest -> retrieve -> generate
+│   ├── tts.py           # Text-to-speech
+│   └── api.py           # FastAPI endpoints
+├── data/
+│   └── docs/            # Put your documents here (sample.md included)
+├── tests/
+│   ├── test_chunking.py
+│   └── test_api.py
+├── cli.py               # Command-line interface
+├── streamlit_app.py     # Web UI
+├── requirements.txt
+├── .env.example
+├── Dockerfile
+├── LICENSE
+└── README.md
+```
 
-> Note: this beginner version does retrieval and shows the retrieved text as the answer. A full RAG system adds a language model (LLM) that rewrites the retrieved text into a natural answer. See "Next Steps" below.
+## Getting started
 
----
+### Prerequisites
+- Python 3.10 or newer
+- An API key from [Anthropic](https://console.anthropic.com/) **or** [OpenAI](https://platform.openai.com/)
+- Internet access on first run (to download the embedding model, about 90 MB) and for voice answers
 
-## Setup
+### Installation
 
-### 1. Requirements
-- Python 3.9 or newer
-- pip
-
-### 2. Clone the repo
 ```bash
-git clone https://github.com/<your-username>/simple-rag-chatbot.git
-cd simple-rag-chatbot
+# 1. Clone the repository
+git clone https://github.com/Rohitchoubey931/rag-chatbot.git
+cd rag-chatbot
+
+# 2. Create and activate a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate          # macOS / Linux
+# .venv\Scripts\activate           # Windows
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure your API key
+cp .env.example .env
+# Open .env and paste your key
 ```
 
-### 3. Create a virtual environment (recommended)
+### Index the sample document and chat
 
-**macOS / Linux**
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python cli.py ingest
+python cli.py chat
 ```
 
-**Windows**
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
+Try asking: *"Why does RAG reduce hallucinations?"*
 
-### 4. Install the libraries
-```bash
-python3 -m pip install -r requirements.txt
-```
+## Configuration
 
-### 5. Run the chatbot
-```bash
-python3 chat.py
-```
+All settings are read from environment variables (or the `.env` file).
 
----
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_PROVIDER` | `anthropic` | `anthropic` or `openai` |
+| `ANTHROPIC_API_KEY` | none | Required if using Anthropic |
+| `OPENAI_API_KEY` | none | Required if using OpenAI |
+| `LLM_MODEL` | provider default | Override the model name |
+| `EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Any sentence-transformers model |
+| `CHUNK_SIZE` | `800` | Characters per chunk |
+| `CHUNK_OVERLAP` | `150` | Characters shared between neighbouring chunks |
+| `TOP_K` | `4` | Chunks sent to the LLM |
+| `MIN_SCORE` | `0.2` | Minimum cosine similarity to count as relevant |
+| `MAX_TOKENS` | `1000` | Maximum answer length |
+| `HISTORY_TURNS` | `6` | Previous messages included for follow-ups |
+| `DOCS_DIR`, `CHROMA_DIR`, `AUDIO_DIR` | under `data/` | Storage locations |
 
 ## Usage
 
-| What you type | What happens |
-|---|---|
-| any question | the bot searches the knowledge base and replies |
-| `voice on` | answers are also read out loud |
-| `voice off` | turns voice off |
-| `quit` | exits the chatbot |
+### 1. Web UI (Streamlit)
 
-### Example conversation
-
-```
-You: what is RAG?
-
-Bot: RAG stands for Retrieval-Augmented Generation. It is a technique where
-a chatbot first searches a set of documents ... 
-   [source: chunk 1, match 0.35]
-
-You: voice on
-Bot: Voice is ON.
-
-You: what is cosine similarity
-Bot: Cosine similarity is a way to measure how close two vectors are ...
-   [source: chunk 5, match 0.27]
-(the answer is also spoken)
-
-You: who won the world cup
-Bot: Sorry, I could not find that in my knowledge base. Try asking in a different way.
+```bash
+streamlit run streamlit_app.py
 ```
 
----
+Upload files in the sidebar, click **Index uploaded files**, then ask questions. Expand a source to see the exact passage used. Switch on **Voice answers** to hear the response.
 
-## Customize It
+### 2. REST API (FastAPI)
 
-### Use your own knowledge
-1. Open `knowledge_base.txt`.
-2. Replace the content with your own text (notes, FAQ, syllabus, resume details, anything).
-3. Put **one blank line** between paragraphs. Each paragraph becomes one chunk.
-4. Save and run `python3 chat.py` again.
+```bash
+uvicorn app.api:app --reload
+```
 
-Tips: keep each paragraph about one topic, and write 2-5 sentences per paragraph.
+Interactive docs are available at <http://127.0.0.1:8000/docs>.
 
-### Change the settings
-At the top of `chat.py`:
+### 3. Command line
 
-| Setting | Meaning | Try |
+```bash
+python cli.py ingest           # index everything in data/docs
+python cli.py chat             # chat in the terminal
+python cli.py chat --voice     # also save answers as mp3 files
+```
+
+## API reference
+
+| Method | Endpoint | Description |
 |---|---|---|
-| `TOP_K` | how many chunks to show | 1 for short answers, 3 for more detail |
-| `MIN_SCORE` | minimum match needed to answer | raise it (0.2) for stricter answers, lower it (0.05) to answer more often |
-| `rate` in `speak()` | speaking speed | 150 (slower) to 200 (faster) |
+| GET | `/health` | Service status |
+| POST | `/ingest` | Index every file in `data/docs` |
+| POST | `/upload` | Upload and index one PDF, TXT or MD file |
+| GET | `/documents` | List indexed documents |
+| DELETE | `/documents/{name}` | Remove a document from the index and disk |
+| POST | `/ask` | Ask a question |
+| GET | `/audio/{filename}` | Download a generated mp3 |
 
----
+**Upload a document**
+```bash
+curl -X POST http://127.0.0.1:8000/upload -F "file=@my_report.pdf"
+```
+
+**Ask a question**
+```bash
+curl -X POST http://127.0.0.1:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What are the main steps in RAG?", "top_k": 4, "voice": false}'
+```
+
+**Example response**
+```json
+{
+  "answer": "RAG splits documents into chunks, embeds them, stores them in a vector database, retrieves the most similar chunks for a question, and passes them to the LLM [sample.md].",
+  "sources": [
+    {"source": "sample.md", "page": null, "score": 0.71, "snippet": "How it works ..."}
+  ],
+  "audio_url": null
+}
+```
+
+**Follow-up question with history**
+```json
+{
+  "question": "And why is that useful?",
+  "history": [
+    {"role": "user", "content": "What is RAG?"},
+    {"role": "assistant", "content": "RAG lets a model answer using your own documents."}
+  ]
+}
+```
+
+## Design decisions
+
+- **Local embeddings:** keeps indexing free and private; only the final prompt goes to the LLM provider.
+- **Cosine similarity with a threshold:** returning "not found" is better than forcing an answer from irrelevant text.
+- **Overlapping chunks cut at word boundaries:** prevents facts being split across chunks and avoids mid-word cuts.
+- **Content-hash chunk IDs with upsert:** makes ingestion idempotent.
+- **Lazy pipeline initialisation:** the API starts instantly and the tests do not load the embedding model.
+- **Provider abstraction in one module:** swapping or adding an LLM touches only `app/llm.py`.
+- **Path sanitising on upload and delete:** file names are reduced to their base name to block path traversal.
+
+## Testing
+
+```bash
+pytest -v
+```
+
+The tests cover the chunking logic and the API's input validation. They do not need an API key or model download.
+
+## Docker
+
+```bash
+docker build -t rag-chatbot .
+docker run -p 8000:8000 --env-file .env -v "$(pwd)/data:/app/data" rag-chatbot
+```
+
+The mounted `data` folder keeps your documents and vector index between runs.
 
 ## Troubleshooting
 
-**"Voice is not available" message**
-- Make sure you ran `pip install -r requirements.txt`.
-- **macOS:** pyttsx3 needs `pyobjc-framework-Cocoa`, which is already in `requirements.txt`. If it still fails, run `pip install pyobjc-framework-Cocoa`.
-- **Linux:** install the speech engine with `sudo apt install espeak`.
-- **Windows:** it works with the built-in voices, so no extra setup is usually needed.
-
-**"No module named 'sklearn'"**
-Python cannot see the libraries. Install them with the same Python that runs the bot:
-```bash
-python3 -m pip install -r requirements.txt
-```
-If your terminal line starts with `(venv)` or `(.venv)`, install while the environment is active.
-
-**"Could not find knowledge_base.txt"**
-Run the command from inside the project folder, or check that the file name is spelled correctly.
-
-**The bot gives a wrong or odd answer**
-TF-IDF matches *words*, not *meaning*. If you ask using different words than the text uses, it can miss. Try rephrasing, or add more detail to your knowledge base. Upgrading to embeddings (below) solves this properly.
-
----
+| Problem | Fix |
+|---|---|
+| `ANTHROPIC_API_KEY is not set` | Create `.env` from `.env.example` and add your key |
+| Bot always says "couldn't find anything" | Run `python cli.py ingest` first, or lower `MIN_SCORE` |
+| PDF answers are empty | The PDF may be scanned images; this project needs selectable text (OCR is on the roadmap) |
+| First run is slow | The embedding model is downloading once; later runs are fast |
+| Voice fails | gTTS needs internet access |
+| Changed `EMBEDDING_MODEL` and results are odd | Delete `data/chroma/` and re-index, since vectors from different models are not comparable |
 
 ## Limitations
 
-- Matches keywords, not meaning, so synonyms may not match.
-- Returns the stored text as-is, not a newly written answer.
-- No memory of earlier messages in the chat.
-- Voice output only; you type your questions.
+- Scanned or image-only PDFs are not supported (no OCR).
+- Retrieval is purely semantic; very exact keyword matches (IDs, codes) can be missed.
+- There is no authentication on the API, so do not expose it publicly as is.
+- Answer quality depends on the quality of the documents and the LLM.
 
----
+## Roadmap
 
-## Next Steps (upgrade ideas)
+- [ ] Hybrid search (BM25 + embeddings) and a re-ranker
+- [ ] Streaming responses
+- [ ] OCR for scanned PDFs
+- [ ] Support for DOCX and web pages
+- [ ] API authentication and rate limiting
+- [ ] Retrieval evaluation set (hit rate, MRR)
 
-1. **Better retrieval:** replace TF-IDF with `sentence-transformers` embeddings so it understands meaning.
-2. **Vector database:** store embeddings in ChromaDB or FAISS for larger knowledge bases.
-3. **Add an LLM:** send the question and the retrieved chunks to an LLM API and ask it to write the final answer using only that context. This makes it a complete RAG system.
-4. **Read PDFs:** load documents with PyPDF instead of a plain text file.
-5. **Voice input:** add speech-to-text with Whisper so you can talk to the bot.
-6. **Web interface:** wrap it in FastAPI or Streamlit with a text box and audio player.
-7. **Chat memory:** keep the last few messages so follow-up questions work.
+## Contributing
 
----
-
-## Tech Used
-
-- Python
-- scikit-learn (TF-IDF and cosine similarity)
-- pyttsx3 (offline text-to-speech)
-
----
+Contributions are welcome. Fork the repo, create a feature branch, add tests for your change, run `pytest`, and open a pull request.
 
 ## License
 
-This project is open source under the MIT License (see the `LICENSE` file). Feel free to use and modify it.
+Distributed under the MIT License. See [LICENSE](LICENSE) for details.
+
+## Author
+
+**Rohit Choubey**
+GitHub: [Rohitchoubey931](https://github.com/Rohitchoubey931) · LinkedIn: [rohitchoubey931](https://linkedin.com/in/rohitchoubey931)
