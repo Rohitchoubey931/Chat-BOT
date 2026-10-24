@@ -121,8 +121,8 @@ rag-chatbot/
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Rohitchoubey931/rag-chatbot.git
-cd rag-chatbot
+git clone https://github.com/Rohitchoubey931/RAG-BOT-with-Voice-on.git
+cd RAG-BOT-with-Voice-on
 
 # 2. Create and activate a virtual environment
 python3 -m venv .venv

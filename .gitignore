@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Generated data
+data/chroma/
+data/audio/
+
+# Your private documents (keep only the sample in the repo)
+data/docs/*
+!data/docs/.gitkeep
+!data/docs/sample.md
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
